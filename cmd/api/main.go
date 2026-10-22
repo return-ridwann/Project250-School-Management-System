@@ -8,6 +8,7 @@ import (
 
 	"sms/internal/database"
 	"sms/internal/handlers"
+	"sms/internal/middleware"
 	"sms/internal/repository"
 	"sms/internal/services"
 )
@@ -30,11 +31,16 @@ func main() {
 
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
-		jwtSecret = "dev_fallback_secret_key_change_in_prod"
+		jwtSecret = services.DefaultJWTSecret
 		log.Println("Warning: JWT_SECRET not set, using default development key")
 	}
+	middleware.SetJWTSecret(jwtSecret)
+
 	authService := services.NewAuthService(authRepo, jwtSecret)
 	authHandler := handlers.NewAuthHandler(authService)
+
+	studentRepo := repository.NewStudentRepository(db)
+	studentHandler := handlers.NewStudentHandler(studentRepo)
 
 	// Setup Router
 	mux := http.NewServeMux()
@@ -61,6 +67,28 @@ func main() {
 
 	// Register Auth Routes
 	authHandler.RegisterRoutes(mux)
+
+	// Admin Middleware Helper
+	adminOnly := func(handler http.HandlerFunc) http.HandlerFunc {
+		return middleware.AuthMiddleware(middleware.RequireRole("admin")(handler))
+	}
+
+	// Register Admin Ping Route (protected by AuthMiddleware & RequireRole)
+	mux.HandleFunc("GET /admin/ping", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "ok",
+			"message": "pong",
+		})
+	}))
+
+	// Register Admin Student Routes (Protected by Admin Role Middleware)
+	mux.HandleFunc("POST /admin/students", adminOnly(studentHandler.CreateStudentHandler))
+	mux.HandleFunc("GET /admin/students", adminOnly(studentHandler.ListStudentsHandler))
+	mux.HandleFunc("GET /admin/students/{id}", adminOnly(studentHandler.GetStudentHandler))
+	mux.HandleFunc("PUT /admin/students/{id}", adminOnly(studentHandler.UpdateStudentHandler))
+	mux.HandleFunc("DELETE /admin/students/{id}", adminOnly(studentHandler.DeleteStudentHandler))
 
 	// Start Server
 	log.Println("Server starting on http://localhost:8080")
